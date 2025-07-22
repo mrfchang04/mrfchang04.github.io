@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Reaction Time Task</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background-color: black;
+      color: white;
+      font-family: sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #container {
+      text-align: center;
+      max-width: 600px;
+    }
+    #stimulus {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background-color: blue;
+      display: none;
+      z-index: 1000;
+    }
+    button {
+      margin-top: 20px;
+      padding: 10px 20px;
+      font-size: 1.2em;
+    }
+    #log {
+      margin-top: 20px;
+      text-align: left;
+      max-height: 200px;
+      overflow-y: auto;
+      font-size: 0.9em;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="stimulus"></div>
+  <div id="container">
+    <h1>Reaction Time Task</h1>
+    <p id="instructions">
+      Press the spacebar as quickly as possible when you see a flash or hear a beep.<br>
+      Do not press early! There will be 20 trials in total. 
+      If you are done with your practice rounds, simply refesh the page and begin the task.
+      Please make sure you copy and paste your results and send it to mca262@sfu.ca after finishing!<br>
+      Click below to begin.
+    </p>
+    <button onclick="startTask()">Start Task</button>
+    <div id="log"></div>
+  </div>
+
+  <!-- Replaced the silent/placeholder WAV with your ding.mp3 file -->
+  <audio id="beep" src="ding.mp3" preload="auto"></audio>
+
+  <script>
+    const NUM_TRIALS = 20;
+    const STIM_DURATION = 150; // ms
+    const MIN_DELAY = 500;
+    const MAX_DELAY = 2000;
+
+    let trials = [];
+    let currentTrial = -1;
+    let stimulusStart = 0;
+    let waitingForKey = false;
+    let logData = [];
+
+    const beep = document.getElementById("beep");
+    const stimulusDiv = document.getElementById("stimulus");
+    const logDiv = document.getElementById("log");
+
+    document.addEventListener("keydown", handleKey);
+
+    function startTask() {
+      trials = generateTrials();
+      currentTrial = -1;
+      logData = [];
+      document.querySelector("button").style.display = "none";
+      document.getElementById("instructions").style.display = "none";
+      nextTrial();
+    }
+
+    function generateTrials() {
+      const array = Array(10).fill("auditory").concat(Array(10).fill("visual"));
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+      }
+      return array;
+    }
+
+    function nextTrial() {
+      currentTrial++;
+      if (currentTrial >= NUM_TRIALS) {
+        endTask();
+        return;
+      }
+      const delay = Math.floor(Math.random() * (MAX_DELAY - MIN_DELAY)) + MIN_DELAY;
+      waitingForKey = false;
+      setTimeout(() => showStimulus(trials[currentTrial]), delay);
+    }
+
+    function showStimulus(type) {
+      stimulusStart = performance.now();
+      waitingForKey = true;
+
+      if (type === "visual") {
+        stimulusDiv.style.display = "block";
+        setTimeout(() => {
+          stimulusDiv.style.display = "none";
+        }, STIM_DURATION);
+      } else if (type === "auditory") {
+        // Rewind to start so the sound can replay immediately on the next trial
+        beep.currentTime = 0;
+        beep.play();
+      }
+    }
+
+    function handleKey(e) {
+      if (e.code !== "Space") return;
+
+      const now = performance.now();
+
+      if (!waitingForKey) {
+        log("Trial " + (currentTrial + 1) + ": False start");
+        logData.push({ trial: currentTrial + 1, type: trials[currentTrial], reactionTime: null, error: "false start" });
+        nextTrial();
+      } else {
+        const rt = Math.round(now - stimulusStart);
+        log("Trial " + (currentTrial + 1) + " (" + trials[currentTrial] + "): " + rt + " ms");
+        logData.push({ trial: currentTrial + 1, type: trials[currentTrial], reactionTime: rt, error: null });
+        waitingForKey = false;
+        nextTrial();
+      }
+    }
+
+    function endTask() {
+      log("\nTask complete!\n\nSummary:\n" + JSON.stringify(logData, null, 2));
+      document.querySelector("button").textContent = "Restart";
+      document.querySelector("button").style.display = "inline-block";
+      document.getElementById("instructions").style.display = "block";
+      document.getElementById("instructions").textContent = "You may download your results by copying the log.";
+    }
+
+    function log(message) {
+      console.log(message);
+      logDiv.textContent += message + "\n";
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+  </script>
+</body>
+</html>
