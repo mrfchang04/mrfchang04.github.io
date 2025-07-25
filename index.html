@@ -78,13 +78,15 @@
     const stimulusDiv = document.getElementById("stimulus");
     const logDiv = document.getElementById("log");
 
-    // ✅ Event listeners for both spacebar and taps/clicks
-    document.addEventListener("keydown", (e) => {
+    /* ---------- Input listeners ---------- */
+    // Space‑bar (desktop)
+    document.addEventListener("keydown", e => {
       if (e.code === "Space") processResponse();
     });
-    document.addEventListener("touchstart", processResponse);
-    document.addEventListener("click", processResponse);
+    // Pointer (touch, mouse, pen) – fires once per interaction
+    document.addEventListener("pointerdown", processResponse);
 
+    /* ---------- Task control ---------- */
     function startTask() {
       trials = generateTrials();
       currentTrial = -1;
@@ -124,19 +126,20 @@
           stimulusDiv.style.display = "none";
         }, STIM_DURATION);
       } else if (type === "auditory") {
-        beep.currentTime = 0; // ensures immediate replay
+        beep.currentTime = 0;  // ensure immediate replay
         beep.play();
       }
     }
 
+    /* ---------- Response handling ---------- */
     function processResponse() {
-      // Prevent false triggering before the task starts or after finishing
+      // Ignore taps/presses outside active trials
       if (currentTrial < 0 || currentTrial >= NUM_TRIALS) return;
 
       const now = performance.now();
 
       if (!waitingForKey) {
-        log("Trial " + (currentTrial + 1) + ": False start");
+        log(`Trial ${currentTrial + 1}: False start`);
         logData.push({
           trial: currentTrial + 1,
           type: trials[currentTrial],
@@ -146,7 +149,7 @@
         nextTrial();
       } else {
         const rt = Math.round(now - stimulusStart);
-        log("Trial " + (currentTrial + 1) + " (" + trials[currentTrial] + "): " + rt + " ms");
+        log(`Trial ${currentTrial + 1} (${trials[currentTrial]}): ${rt} ms`);
         logData.push({
           trial: currentTrial + 1,
           type: trials[currentTrial],
@@ -158,6 +161,7 @@
       }
     }
 
+    /* ---------- Finish & logging ---------- */
     function endTask() {
       log("\nTask complete!\n\nSummary:\n" + JSON.stringify(logData, null, 2));
       document.querySelector("button").textContent = "Restart";
