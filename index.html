@@ -16,6 +16,7 @@
       justify-content: center;
       height: 100vh;
       overflow: hidden;
+      cursor: pointer; /* indicates tapping is allowed */
     }
     #container {
       text-align: center;
@@ -49,17 +50,16 @@
   <div id="container">
     <h1>Reaction Time Task</h1>
     <p id="instructions">
-      Press the spacebar as quickly as possible when you see a flash or hear a beep.<br>
+      Press the spacebar, or tap your screen on mobile as quickly as possible when you see a flash or hear a beep.<br>
       Do not press early! There will be 20 trials in total. 
-      If you are done with your practice rounds, simply refesh the page and begin the task.
-      Please make sure you copy and paste your results and send it to mca262@sfu.ca after finishing!<br>
+      If you are done with your practice rounds, simply refresh the page and begin the task.
+      Please make sure you copy and paste your results and send it to <strong>mca262@sfu.ca</strong> after finishing!<br>
       Click below to begin.
     </p>
     <button onclick="startTask()">Start Task</button>
     <div id="log"></div>
   </div>
 
-  <!-- Replaced the silent/placeholder WAV with your ding.mp3 file -->
   <audio id="beep" src="ding.mp3" preload="auto"></audio>
 
   <script>
@@ -78,7 +78,12 @@
     const stimulusDiv = document.getElementById("stimulus");
     const logDiv = document.getElementById("log");
 
-    document.addEventListener("keydown", handleKey);
+    // ✅ Event listeners for both spacebar and taps/clicks
+    document.addEventListener("keydown", (e) => {
+      if (e.code === "Space") processResponse();
+    });
+    document.addEventListener("touchstart", processResponse);
+    document.addEventListener("click", processResponse);
 
     function startTask() {
       trials = generateTrials();
@@ -119,25 +124,35 @@
           stimulusDiv.style.display = "none";
         }, STIM_DURATION);
       } else if (type === "auditory") {
-        // Rewind to start so the sound can replay immediately on the next trial
-        beep.currentTime = 0;
+        beep.currentTime = 0; // ensures immediate replay
         beep.play();
       }
     }
 
-    function handleKey(e) {
-      if (e.code !== "Space") return;
+    function processResponse() {
+      // Prevent false triggering before the task starts or after finishing
+      if (currentTrial < 0 || currentTrial >= NUM_TRIALS) return;
 
       const now = performance.now();
 
       if (!waitingForKey) {
         log("Trial " + (currentTrial + 1) + ": False start");
-        logData.push({ trial: currentTrial + 1, type: trials[currentTrial], reactionTime: null, error: "false start" });
+        logData.push({
+          trial: currentTrial + 1,
+          type: trials[currentTrial],
+          reactionTime: null,
+          error: "false start"
+        });
         nextTrial();
       } else {
         const rt = Math.round(now - stimulusStart);
         log("Trial " + (currentTrial + 1) + " (" + trials[currentTrial] + "): " + rt + " ms");
-        logData.push({ trial: currentTrial + 1, type: trials[currentTrial], reactionTime: rt, error: null });
+        logData.push({
+          trial: currentTrial + 1,
+          type: trials[currentTrial],
+          reactionTime: rt,
+          error: null
+        });
         waitingForKey = false;
         nextTrial();
       }
@@ -148,7 +163,8 @@
       document.querySelector("button").textContent = "Restart";
       document.querySelector("button").style.display = "inline-block";
       document.getElementById("instructions").style.display = "block";
-      document.getElementById("instructions").textContent = "You may download your results by copying the log.";
+      document.getElementById("instructions").textContent =
+        "You may download your results by copying the log.";
     }
 
     function log(message) {
