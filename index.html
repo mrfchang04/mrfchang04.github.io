@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Reaction Time Task</title>
   <style>
     html,body{
@@ -23,34 +23,54 @@
   <div id="container">
     <h1>Reaction Time Task</h1>
     <p id="instructions">
-      Press the spacebar, or tap your screen on mobile, as quickly as possible when you
-      see a flash or hear a beep.<br>
-      Do not press early! There will be 20 trials in total.<br>
-      When you finish, copy the results and email them to <strong>mca262@sfu.ca</strong>.<br>
+      Press the spacebar or tap the screen when you see a flash or hear a beep.<br>
+      Do not press early! There will be 20 trials.<br>
+      When finished, copy the results and email them to <strong>mca262@sfu.ca</strong>.<br>
       Click below to begin.
     </p>
     <button onclick="startTask()">Start Task</button>
     <div id="log"></div>
   </div>
 
-  <audio id="beep" src="ding.mp3" preload="auto"></audio>
+  <!-- keeps one hidden element only so we can clone if needed -->
+  <audio id="beep" src="ding.mp3" preload="auto" style="display:none"></audio>
 
   <script>
     /* ---------- Parameters ---------- */
-    const NUM_TRIALS = 20;
-    const STIM_DURATION = 150;      // ms (visual flash length)
-    const MIN_DELAY    = 500;
-    const MAX_DELAY    = 2000;
+    const NUM_TRIALS     = 20;
+    const STIM_DURATION  = 150;  // ms
+    const MIN_DELAY      = 500;
+    const MAX_DELAY      = 2000;
+
+    /* ---------- Audio (Web Audio API) ---------- */
+    let ctx = null;
+    let beepBuffer = null;
+
+    async function initAudio() {
+      if (ctx) return;                                  // already initialised
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const res   = await fetch('ding.mp3');            // same file as <audio>
+      const array = await res.arrayBuffer();
+      beepBuffer  = await ctx.decodeAudioData(array);   // decode once
+    }
+
+    function playBeep() {
+      if (!ctx || !beepBuffer) return;                  // safety guard
+      if (ctx.state === 'suspended') ctx.resume();      // iOS Safari quirk
+      const src = ctx.createBufferSource();
+      src.buffer = beepBuffer;
+      src.connect(ctx.destination);
+      src.start();
+    }
 
     /* ---------- State ---------- */
     let trials = [];
-    let currentTrial = -1;
-    let stimulusStart = 0;
-    let waitingForKey = false;
-    let logData = [];
+    let currentTrial   = -1;
+    let stimulusStart  = 0;
+    let waitingForKey  = false;
+    let logData        = [];
 
     /* ---------- Elements ---------- */
-    const beep        = document.getElementById("beep");
     const stimulusDiv = document.getElementById("stimulus");
     const logDiv      = document.getElementById("log");
 
@@ -61,19 +81,23 @@
     document.addEventListener("pointerdown", processResponse); // tap / click / pen
 
     /* ---------- Task flow ---------- */
-    function startTask() {
-      trials = shuffle([...Array(10).fill("auditory"), ...Array(10).fill("visual")]);
+    async function startTask() {
+      await initAudio();                                 // unlock & decode on user click
+
+      trials = shuffle([...Array(10).fill("auditory"),
+                        ...Array(10).fill("visual")]);
       currentTrial = -1;
       logData = [];
+
       document.querySelector("button").style.display = "none";
       document.getElementById("instructions").style.display = "none";
       nextTrial();
     }
 
     function shuffle(arr){
-      for(let i=arr.length-1;i>0;i--){
-        const j=Math.floor(Math.random()*(i+1));
-        [arr[i],arr[j]]=[arr[j],arr[i]];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
       }
       return arr;
     }
@@ -83,7 +107,7 @@
       if (currentTrial >= NUM_TRIALS) return endTask();
 
       waitingForKey = false;
-      const delay = Math.random()*(MAX_DELAY-MIN_DELAY)+MIN_DELAY;
+      const delay = Math.random() * (MAX_DELAY - MIN_DELAY) + MIN_DELAY;
       setTimeout(() => showStimulus(trials[currentTrial]), delay);
     }
 
@@ -94,15 +118,9 @@
       if (type === "visual") {
         stimulusDiv.style.display = "block";
         setTimeout(() => stimulusDiv.style.display = "none", STIM_DURATION);
-      } else {                  // ---------- AUDITORY ----------
-        playBeep();             // <‑‑‑ uses clone so back‑to‑back beeps work
+      } else {
+        playBeep();              // **new AudioContext‑based playback**
       }
-    }
-
-    /* --- plays a fresh cloned element each time --- */
-    function playBeep(){
-      const snd = beep.cloneNode();
-      snd.play().catch(()=>{}); // ignore rapid‑fire rejection on some browsers
     }
 
     /* ---------- Response handling ---------- */
@@ -115,16 +133,16 @@
       } else {
         const rt = Math.round(now - stimulusStart);
         logTrial(rt, null);
+        waitingForKey = false;
       }
-      waitingForKey = false;
       nextTrial();
     }
 
     function logTrial(rt, error){
-      log(`Trial ${currentTrial+1} (${trials[currentTrial]}): `
-          + (error ? error : rt+" ms"));
+      log(`Trial ${currentTrial + 1} (${trials[currentTrial]}): `
+          + (error ? error : `${rt} ms`));
       logData.push({
-        trial: currentTrial+1,
+        trial: currentTrial + 1,
         type:  trials[currentTrial],
         reactionTime: rt,
         error
@@ -133,20 +151,20 @@
 
     /* ---------- Finish ---------- */
     function endTask() {
-      log("\nTask complete!\n\nSummary:\n" + JSON.stringify(logData,null,2));
-      const btn=document.querySelector("button");
-      btn.textContent="Restart";
-      btn.style.display="inline-block";
-      const instr=document.getElementById("instructions");
-      instr.style.display="block";
-      instr.textContent="Copy the log above to keep your results.";
+      log("\nTask complete!\n\nSummary:\n" + JSON.stringify(logData, null, 2));
+      const btn = document.querySelector("button");
+      btn.textContent = "Restart";
+      btn.style.display = "inline-block";
+      const instr = document.getElementById("instructions");
+      instr.style.display = "block";
+      instr.textContent = "Copy the log above to keep your results.";
     }
 
     /* ---------- Logging helper ---------- */
     function log(msg){
       console.log(msg);
-      logDiv.textContent+=msg+"\n";
-      logDiv.scrollTop=logDiv.scrollHeight;
+      logDiv.textContent += msg + "\n";
+      logDiv.scrollTop = logDiv.scrollHeight;
     }
   </script>
 </body>
