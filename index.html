@@ -16,60 +16,159 @@
     button{margin-top:20px;padding:10px 20px;font-size:1.2em}
     #log{margin-top:20px;text-align:left;max-height:200px;overflow-y:auto;
          font-size:.9em;white-space:pre-wrap}
+    #feedback{
+      position:fixed;top:16px;left:50%;transform:translateX(-50%);
+      padding:8px 14px;border-radius:10px;font-weight:600;pointer-events:none;
+      background:#222;box-shadow:0 6px 24px rgba(0,0,0,.35);opacity:0;transition:opacity .15s;
+      z-index:2000
+    }
+    #feedback.show{opacity:1}
+    #feedback.good{background:#124d2a}
+    #feedback.bad{background:#5a1a1a}
   </style>
 </head>
 <body>
   <div id="stimulus"></div>
+  <div id="feedback" role="status" aria-live="polite"></div>
+
   <div id="container">
     <h1>Reaction Time Task</h1>
     <p id="instructions">
       Press the spacebar, or tap your screen on mobile as quickly as possible when you see a flash or hear a beep.<br>
-      Do not press early! There will be 20 trials in total. 
-      If you are done with your practice rounds, simply refresh the page and begin the task.
-      Please make sure you copy and paste your results and send it to <strong>mca262@sfu.ca</strong> after finishing!<br>
+      Do not press early! We will collect 20 <em>valid</em> trials (10 auditory, 10 visual).<br>
+      Please copy and paste your results and send them to <strong>mca262@sfu.ca</strong> after finishing!<br>
       Click below to begin.
     </p>
     <button onclick="startTask()">Start Task</button>
     <div id="log"></div>
   </div>
 
-  <!-- keeps one hidden element only so we can clone if needed -->
-  <audio id="beep" src="ding.mp3" preload="auto" style="display:none"></audio>
-
   <script>
     /* ---------- Parameters ---------- */
-    const NUM_TRIALS     = 20;
-    const STIM_DURATION  = 150;  // ms
-    const MIN_DELAY      = 500;
-    const MAX_DELAY      = 2000;
+    const NUM_VALID_TRIALS     = 20;       // total valid trials desired
+    const TARGET_PER_TYPE      = NUM_VALID_TRIALS / 2; // 10 + 10
+    const STIM_DURATION        = 150;      // ms visible flash & tone duration
+    const MIN_DELAY            = 500;      // ms
+    const MAX_DELAY            = 2000;     // ms
+    const AUDIO_LOOKAHEAD      = 0.05;     // s: schedule slightly in the future
+    const QUIET_WINDOW_MS      = 200;      // ms before onset counted as false start
+    const MIN_VALID_RT_MS      = 100;      // under this = anticipation -> invalid
+    const MAX_INVALID_RT_MS    = 3000;     // absurdly slow -> invalid
+    const BASE_FALSE_PAUSE_MS  = 1000;     // base pause after invalid
+    const FALSE_PAUSE_JITTER   = 300;      // ± jitter on pause
+    const PRINT_JSON           = false;    // do not print the large JSON at end
+    const VIBRATE_ON_INVALID   = true;
 
-    /* ---------- Audio (Web Audio API) ---------- */
+    // Tone parameters (OscillatorNode)
+    const TONE_FREQ_HZ = 1000; // 1 kHz beep
+    const RAMP_MS      = 3;    // small fade to avoid clicks
+    const TONE_GAIN    = 0.18; // <<< lower = quieter (0.0–1.0). 
+
+    /* ---------- Audio (Web Audio API) ---------- */
     let ctx = null;
-    let beepBuffer = null;
+
+    // handle to currently scheduled/playing tone
+    // { src: OscillatorNode, gain: GainNode, startAt: seconds }
+    let currentAudio = null;
 
     async function initAudio() {
-      if (ctx) return;                                  // already initialised
+      if (ctx) return;
       ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const res   = await fetch('ding.mp3');            // same file as <audio>
-      const array = await res.arrayBuffer();
-      beepBuffer  = await ctx.decodeAudioData(array);   // decode once
     }
 
-    function playBeep() {
-      if (!ctx || !beepBuffer) return;                  // safety guard
-      if (ctx.state === 'suspended') ctx.resume();      // iOS Safari quirk
-      const src = ctx.createBufferSource();
-      src.buffer = beepBuffer;
-      src.connect(ctx.destination);
-      src.start();
+    // Map an AudioContext time (seconds) to performance.now() (ms)
+    function audioTimeToPerfMs(tSec){
+      if (!ctx) return performance.now();
+      const ts = typeof ctx.getOutputTimestamp === "function" ? ctx.getOutputTimestamp() : null;
+      if (ts && typeof ts.contextTime === "number" && typeof ts.performanceTime === "number") {
+        return ts.performanceTime + (tSec - ts.contextTime) * 1000;
+      }
+      // Fallback if getOutputTimestamp() is unavailable
+      return performance.now() + (tSec - ctx.currentTime) * 1000;
+    }
+
+    // Create & schedule a synthesized tone, return scheduled start time (seconds)
+    function playTone(freq = TONE_FREQ_HZ, durMs = STIM_DURATION) {
+      if (!ctx) return null;
+      if (ctx.state === "suspended") ctx.resume();
+
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.value = freq;
+
+      const now     = ctx.currentTime;
+      const startAt = now + AUDIO_LOOKAHEAD;
+      const durSec  = durMs / 1000;
+      const rampSec = RAMP_MS / 1000;
+
+      // Envelope with LOWER PEAK (TONE_GAIN)
+      gain.gain.setValueAtTime(0, startAt);
+      gain.gain.linearRampToValueAtTime(TONE_GAIN, startAt + rampSec);
+      gain.gain.setValueAtTime(TONE_GAIN, startAt + Math.max(0, durSec - rampSec));
+      gain.gain.linearRampToValueAtTime(0, startAt + durSec);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(startAt);
+      // Stop slightly after envelope end
+      osc.stop(startAt + durSec + 0.01);
+
+      currentAudio = { src: osc, gain, startAt };
+      osc.onended = () => {
+        if (currentAudio && currentAudio.src === osc) currentAudio = null;
+        try { osc.disconnect(); gain.disconnect(); } catch (e) {}
+      };
+
+      return startAt; // seconds on audio clock
+    }
+
+    // Cancel a tone that is scheduled but hasn't started yet
+    function cancelScheduledTone() {
+      if (!currentAudio || !ctx) return;
+      const { src, gain, startAt } = currentAudio;
+      const now = ctx.currentTime;
+
+      if (now < startAt) {
+        const tMute = Math.max(now, startAt - 0.002);
+        try {
+          gain.gain.cancelScheduledValues(now);
+          gain.gain.setValueAtTime(gain.gain.value, now);
+          gain.gain.linearRampToValueAtTime(0, tMute);
+          src.stop(startAt + 0.01);
+        } catch (e) { try { src.stop(); } catch(_){} }
+        currentAudio = null;
+      }
+    }
+
+    /* ---------- Feedback ---------- */
+    const feedbackDiv = document.getElementById("feedback");
+    let feedbackTimer = null;
+    function feedback(msg, kind="bad", dur=800){
+      feedbackDiv.textContent = msg;
+      feedbackDiv.className = "";
+      feedbackDiv.classList.add("show", kind);
+      clearTimeout(feedbackTimer);
+      feedbackTimer = setTimeout(()=>feedbackDiv.classList.remove("show"), dur);
+      if (VIBRATE_ON_INVALID && kind==="bad" && navigator.vibrate) {
+        navigator.vibrate([20,30,20]);
+      }
     }
 
     /* ---------- State ---------- */
-    let trials = [];
-    let currentTrial   = -1;
-    let stimulusStart  = 0;
-    let waitingForKey  = false;
-    let logData        = [];
+    let currentRunIndex = -1;       // counts all runs (valid + invalid)
+    let validCount      = 0;        // counts only valid trials
+    let validCounts     = { auditory: 0, visual: 0 };
+    let invalidCount    = 0;
+    let currentType     = null;     // "auditory" | "visual"
+    let stimulusStart   = 0;        // ms in performance.now() timebase
+    let waitingForKey   = false;
+    let taskRunning     = false;
+    let repeatTypeNext  = null;     // if set, force next trial to this type
+    let extraDelay      = 0;        // extra delay before next trial
+    let logData         = [];
 
     /* ---------- Elements ---------- */
     const stimulusDiv = document.getElementById("stimulus");
@@ -79,80 +178,179 @@
     document.addEventListener("keydown", e => {
       if (e.code === "Space") processResponse();
     });
-    document.addEventListener("pointerdown", processResponse); // tap / click / pen
+    document.addEventListener("pointerdown", processResponse);
 
     /* ---------- Task flow ---------- */
     async function startTask() {
-      await initAudio();                                 // unlock & decode on user click
+      await initAudio();
 
-      trials = shuffle([...Array(10).fill("auditory"),
-                        ...Array(10).fill("visual")]);
-      currentTrial = -1;
+      // reset state
+      currentRunIndex = -1;
+      validCount = 0;
+      validCounts = { auditory: 0, visual: 0 };
+      invalidCount = 0;
+      repeatTypeNext = null;
+      extraDelay = 0;
       logData = [];
+      taskRunning = true;
 
       document.querySelector("button").style.display = "none";
       document.getElementById("instructions").style.display = "none";
       nextTrial();
     }
 
-    function shuffle(arr){
-      for (let i = arr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-      }
-      return arr;
+    function remaining(type){
+      return Math.max(0, TARGET_PER_TYPE - validCounts[type]);
+    }
+
+    function pickNextType(){
+      const remA = remaining("auditory");
+      const remV = remaining("visual");
+      const totalRem = remA + remV;
+      if (totalRem <= 0) return null;
+      const r = Math.random() * totalRem;
+      return (r < remA) ? "auditory" : "visual";
+    }
+
+    function penaltyPause(){
+      const jitter = (Math.random()*2 - 1) * FALSE_PAUSE_JITTER;
+      return Math.max(500, BASE_FALSE_PAUSE_MS + jitter);
     }
 
     function nextTrial() {
-      currentTrial++;
-      if (currentTrial >= NUM_TRIALS) return endTask();
+      if (!taskRunning) return;
+      if (validCount >= NUM_VALID_TRIALS) return endTask();
 
-      waitingForKey = false;
-      const delay = Math.random() * (MAX_DELAY - MIN_DELAY) + MIN_DELAY;
-      setTimeout(() => showStimulus(trials[currentTrial]), delay);
+      currentRunIndex++;
+
+      if (repeatTypeNext) {
+        currentType = repeatTypeNext;
+        repeatTypeNext = null;
+      } else {
+        currentType = pickNextType();
+      }
+      if (!currentType) return endTask();
+
+      waitingForKey = false; // will be enabled exactly at onset
+
+      const delay = extraDelay + Math.random() * (MAX_DELAY - MIN_DELAY) + MIN_DELAY;
+      extraDelay = 0;
+      setTimeout(() => showStimulus(currentType), delay);
     }
 
     function showStimulus(type) {
-      stimulusStart = performance.now();
-      waitingForKey = true;
+      if (!taskRunning) return;
 
       if (type === "visual") {
         stimulusDiv.style.display = "block";
-        setTimeout(() => stimulusDiv.style.display = "none", STIM_DURATION);
-      } else {
-        playBeep();              // **new AudioContext‑based playback**
+        requestAnimationFrame(() => {
+          requestAnimationFrame(ts => {
+            stimulusStart = ts; // ms
+            waitingForKey = true;
+
+            setTimeout(() => {
+              stimulusDiv.style.display = "none";
+            }, STIM_DURATION);
+          });
+        });
+      } else { // auditory
+        const startAt = playTone(TONE_FREQ_HZ, STIM_DURATION);
+        if (startAt == null) return;
+
+        const onsetMs = audioTimeToPerfMs(startAt);
+        stimulusStart = onsetMs;
+
+        const armDelay = Math.max(0, onsetMs - performance.now());
+        setTimeout(() => { waitingForKey = true; }, armDelay);
       }
     }
 
     /* ---------- Response handling ---------- */
     function processResponse() {
-      if (currentTrial < 0 || currentTrial >= NUM_TRIALS) return; // not running
+      if (!taskRunning) return;
+
       const now = performance.now();
 
       if (!waitingForKey) {
-        logTrial(null, "false start");
+        // Early press BEFORE onset — also check near-onset window
+        let nearOnset = false;
+        if (currentType === "auditory" && currentAudio && ctx) {
+          const onsetMs = audioTimeToPerfMs(currentAudio.startAt);
+          nearOnset = (onsetMs - now) <= QUIET_WINDOW_MS;
+          cancelScheduledTone(); // avoid surprise beep
+        }
+
+        invalidCount++;
+        feedback(nearOnset ? "Too early — wait for the beep." : "Too early.", "bad");
+        logTrial(null, "false start", false);
+
+        extraDelay = penaltyPause();
+        repeatTypeNext = currentType;
       } else {
-        const rt = Math.round(now - stimulusStart);
-        logTrial(rt, null);
+        // Press after onset; compute RT
+        const rtMs = Math.round(now - stimulusStart);
+
+        // sanity filters
+        if (rtMs < MIN_VALID_RT_MS) {
+          invalidCount++;
+          feedback(`Too fast (${rtMs} ms) — anticipation.`, "bad");
+          if (currentType === "auditory") cancelScheduledTone();
+          logTrial(null, `anticipation ${rtMs} ms`, false);
+          extraDelay = penaltyPause();
+          repeatTypeNext = currentType;
+        } else if (rtMs > MAX_INVALID_RT_MS) {
+          invalidCount++;
+          feedback(`Too slow (${rtMs} ms). Try to respond faster.`, "bad", 1100);
+          logTrial(null, `too slow ${rtMs} ms`, false);
+          extraDelay = penaltyPause();
+          repeatTypeNext = currentType;
+        } else {
+          validCounts[currentType]++;
+          validCount++;
+          feedback(`${rtMs} ms`, "good", 500);
+          logTrial(rtMs, null, true);
+        }
         waitingForKey = false;
       }
       nextTrial();
     }
 
-    function logTrial(rt, error){
-      log(`Trial ${currentTrial + 1} (${trials[currentTrial]}): `
-          + (error ? error : `${rt} ms`));
+    function logTrial(rt, error, isValid){
+      const runNum = currentRunIndex + 1;
+      const validNum = isValid ? validCount : null;
+
+      log(`Run ${runNum} [${currentType}] → `
+          + (error ? error : `${rt} ms`)
+          + (isValid ? `  (valid #${validNum})` : `  (invalid)`));
+
       logData.push({
-        trial: currentTrial + 1,
-        type:  trials[currentTrial],
+        run: runNum,
+        validIndex: validNum,
+        type: currentType,
         reactionTime: rt,
-        error
+        error,
+        totals: {
+          validSoFar: validCount,
+          validAuditory: validCounts.auditory,
+          validVisual: validCounts.visual,
+          invalidPresses: invalidCount
+        }
       });
     }
 
     /* ---------- Finish ---------- */
     function endTask() {
-      log("\nTask complete!\n\nSummary:\n" + JSON.stringify(logData, null, 2));
+      taskRunning = false;
+
+      feedback("Task complete!", "good", 1200);
+      log("\nTask complete!");
+      log(`Valid totals — auditory: ${validCounts.auditory}, visual: ${validCounts.visual}, sum: ${validCount}.`);
+      log(`Invalid presses (false/anticipations/too slow): ${invalidCount}.`);
+
+      if (PRINT_JSON) {
+        log("\nSummary JSON:\n" + JSON.stringify(logData, null, 2));
+      }
+
       const btn = document.querySelector("button");
       btn.textContent = "Restart";
       btn.style.display = "inline-block";
